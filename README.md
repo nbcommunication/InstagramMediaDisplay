@@ -434,7 +434,7 @@ UIkit.util.ready(() => instagram.init());
 The javascript example uses [UIkit's Javascript Utilities](https://github.com/uikit/uikit-site/blob/feature/js-utils/docs/pages/javascript-utilities.md) but the same effect is achievable using plain javascript or any common library like jQuery.
 
 ## Instagram Basic Display API
-This module supercedes InstagramBasicDisplayApi and its implementation is practically identical to the previous version. Meta disabled the Instagram Basic Display API on December 4th, 2024 and this module now uses the Instagram API with Instagram Login to facilitate the same functionality as the previous module.
+This module supersedes InstagramBasicDisplayApi and its implementation is practically identical to the previous version. Meta disabled the Instagram Basic Display API on December 4th, 2024 and this module now uses the Instagram API with Instagram Login to facilitate the same functionality as the previous module.
 
 Upgrading should simply be a case of installing, configuring your new Meta app, authorising the same account(s), and updating the call to the previous module to call this one:
 
