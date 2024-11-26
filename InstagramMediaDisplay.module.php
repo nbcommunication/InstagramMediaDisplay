@@ -24,7 +24,7 @@ class InstagramMediaDisplay extends WireData implements Module, ConfigurableModu
 	public static function getModuleInfo() {
 		return [
 			'title' => 'Instagram Media Display',
-			'version' => 100,
+			'version' => 110,
 			'summary' => "Instagram Media Display, in combination with a Meta app, allows you to get an Instagram user's profile, images, videos, and albums for displaying on your website.",
 			'author' => 'nbcommunication',
 			'href' => 'https://github.com/nbcommunication/InstagramMediaDisplay',
@@ -82,9 +82,48 @@ class InstagramMediaDisplay extends WireData implements Module, ConfigurableModu
 	 *
 	 */
 	public function init() {
+
 		// Reset pagination if request is not AJAX
 		if(!$this->isAjax() && $this->wire()->page->template->name !== 'admin') {
 			$this->wire()->session->remove($this, $this->getNextKey());
+		}
+
+		if(!$this->schemaVersion) {
+
+			// Check if the column exists
+			$database = $this->wire()->database;
+			$table = self::dbTableName;
+			$query = $database->prepare("SHOW COLUMNS FROM `$table` WHERE Field=:column");
+			$query->bindValue(':column', 'token_renews', \PDO::PARAM_STR);
+			$query->execute();
+			$exists = (int) $query->rowCount() > 0;
+			$query->closeCursor();
+
+			$exception = null;
+			if(!$exists) {
+
+				try {
+
+					// Update database table schema
+					$database->exec("ALTER TABLE $table ADD token_renews DATETIME NOT NULL AFTER media_count");
+
+					// Update existing records adding token_renews a day from now
+					$query = $database->prepare("UPDATE $table SET token_renews = :renews");
+					$query->bindValue(':renews', date('Y-m-d H:i:s', strtotime('+1 day')), \PDO::PARAM_STR);
+					$query->execute();
+
+				} catch(\Exception $e) {
+					$exception = $e;
+				}
+			}
+
+			if($exception) {
+				$this->error($exception->getMessage());
+			} else {
+				// Update the schema version
+				$this->schemaVersion = 1;
+				$this->wire()->modules->saveConfig($this, 'schemaVersion', 1);
+			}
 		}
 	}
 
@@ -770,7 +809,6 @@ class InstagramMediaDisplay extends WireData implements Module, ConfigurableModu
 	public function addUserAccount($username, $token) {
 
 		$profile = $this->getProfile($username, $token);
-		$this->log(print_r([$profile, $username, $token], true));
 		if(isset($profile['id'])) {
 
 			$query = $this->wire()->database->prepare(
@@ -780,6 +818,7 @@ class InstagramMediaDisplay extends WireData implements Module, ConfigurableModu
 					'user_id=:id, ' .
 					'account_type=:type, ' .
 					'media_count=:count, ' .
+					'token_renews=:date, ' .
 					'modified=NOW()'
 			);
 			$query->bindValue(':username', $username);
@@ -787,6 +826,7 @@ class InstagramMediaDisplay extends WireData implements Module, ConfigurableModu
 			$query->bindValue(':id', $profile['id']);
 			$query->bindValue(':type', $profile['account_type']);
 			$query->bindValue(':count', $profile['media_count']);
+			$query->bindValue(':date', $this->getRenewalDate());
 
 			return $query->execute();
 
@@ -874,6 +914,36 @@ class InstagramMediaDisplay extends WireData implements Module, ConfigurableModu
 
 		$cache = $this->wire()->cache;
 		$http = $this->wire(new WireHttp());
+
+		// If the long-lived token expires in the next week then refresh it
+		if($useCache && count($data) && isset($data['access_token'])) {
+			foreach($this->getUserAccounts() as $username => $accessData) {
+				if(isset($data['access_token']) && $data['access_token'] === $accessData['token']) {
+					if(strtotime($accessData['token_renews'] . '-7 days') < time()) {
+
+						// Refresh a long-lived Instagram User Access Token
+						// https://developers.facebook.com/docs/instagram-basic-display-api/reference/refresh_access_token
+
+						$response = $this->apiRequest('refresh_access_token', [
+							'grant_type' => 'ig_refresh_token',
+							'access_token' => $accessData['token'],
+						], false);
+
+						if($response && isset($response['access_token'])) {
+							$this->updateUserAccount($username, $response['access_token']);
+							$data['access_token'] = $response['access_token'];
+							$message = sprintf($this->_('Long-lived access token refreshed for %s'), $username);
+						} else {
+							$message = $this->_('Could not refresh long-lived access token');
+						}
+
+						$this->log($message);
+
+						break;
+					}
+				}
+			}
+		}
 
 		// Endpoint URL
 		$urlGraph = 'https://graph.instagram.com/v20.0';
@@ -1169,6 +1239,19 @@ class InstagramMediaDisplay extends WireData implements Module, ConfigurableModu
 	}
 
 	/**
+	 * Get the token renewal date
+	 *
+	 * #pw-internal
+	 *
+	 * @param int $days
+	 * @return string
+	 *
+	 */
+	protected function getRenewalDate($days = 60) {
+		return date('Y-m-d H:i:s', strtotime("+$days days"));
+	}
+
+	/**
 	 * Does the response have media?
 	 *
 	 * #pw-internal
@@ -1234,15 +1317,17 @@ class InstagramMediaDisplay extends WireData implements Module, ConfigurableModu
 	 *
 	 */
 	protected function updateUserAccount($username, $value) {
+		$isToken = is_string($value);
 		$query = $this->wire()->database->prepare(
 			'UPDATE ' . self::dbTableName . ' SET ' .
-				'username=:username,' .
-				'media_count=:value,' .
-				'modified=NOW()' .
+				'username=:username, ' .
+				($isToken ? 'token=:value, token_renews=:date' : 'media_count=:value') . ', ' .
+				'modified=NOW() ' .
 				'WHERE username=:username'
 		);
 		$query->bindValue(':username', $username);
 		$query->bindValue(':value', $value);
+		if($isToken) $query->bindValue(':date', $this->getRenewalDate());
 		return $query->execute();
 	}
 
@@ -1257,6 +1342,7 @@ class InstagramMediaDisplay extends WireData implements Module, ConfigurableModu
 			'user_id VARCHAR(32) NOT NULL,' .
 			'account_type VARCHAR(32) NOT NULL,' .
 			'media_count INT(32) NOT NULL,' .
+			'token_renews DATETIME NOT NULL,' .
 			'modified TIMESTAMP NOT NULL' .
 		')');
 	}
