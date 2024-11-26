@@ -117,6 +117,7 @@ class InstagramMediaDisplayConfig extends ModuleConfig {
 				$this->_('Username'),
 				$this->_('User ID'),
 				$this->_('Media Count'),
+				$this->_('Token Renews'),
 				'',
 			]);
 
@@ -137,10 +138,14 @@ class InstagramMediaDisplayConfig extends ModuleConfig {
 					$remove->set($key, $value);
 				};
 
+				$renews = strtotime($account['token_renews']);
 				$table->row([
 					"<a href=https://www.instagram.com/$username target=_blank rel='noopener noreferrer'>$username</a>",
 					$account['user_id'],
 					$account['media_count'],
+					"<span title='$account[token_renews]'>" .
+						(isset($datetime) ? $datetime->date('rel', $renews) : date('d/m/Y H:i', $renews)) .
+					'</span>',
 					$remove->render(),
 				]);
 			}
